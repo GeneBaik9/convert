@@ -1,4 +1,3 @@
-import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -41,14 +40,16 @@ def _merge_file(
         local_file.write_text(new_content)
         return FileResult(path=file_path, status="patched")
 
-    old_fd, old_path = tempfile.mkstemp(suffix=".base")
-    new_fd, new_path = tempfile.mkstemp(suffix=".other")
-    try:
-        os.write(old_fd, old_content.encode())
-        os.close(old_fd)
-        os.write(new_fd, new_content.encode())
-        os.close(new_fd)
+    with (
+        tempfile.NamedTemporaryFile(mode="w", suffix=".base", delete=False) as f_old,
+        tempfile.NamedTemporaryFile(mode="w", suffix=".other", delete=False) as f_new,
+    ):
+        f_old.write(old_content)
+        old_path = f_old.name
+        f_new.write(new_content)
+        new_path = f_new.name
 
+    try:
         result = subprocess.run(
             [
                 "git", "merge-file",
@@ -76,7 +77,4 @@ def _merge_file(
 
     finally:
         for p in (old_path, new_path):
-            try:
-                os.unlink(p)
-            except FileNotFoundError:
-                pass
+            Path(p).unlink(missing_ok=True)
