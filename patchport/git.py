@@ -33,7 +33,7 @@ def list_commits(upstream: Path, limit: int = 20) -> list[dict]:
 
     if result.returncode != 0:
         raise NotAGitRepoError(upstream)
-    lines = [l for l in result.stdout.strip().splitlines() if l]
+    lines = [ln for ln in result.stdout.strip().splitlines() if ln]
     commits = []
     for i, line in enumerate(lines, 1):
         hash_, message, date = line.split("\x1f", 2)
