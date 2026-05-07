@@ -66,12 +66,12 @@ def _merge_file(
 
     if old_content is None or not local_file.exists():
         local_file.parent.mkdir(parents=True, exist_ok=True)
-        local_file.write_text(new_content)
+        local_file.write_text(new_content, encoding="utf-8")
         return FileResult(path=file_path, status="patched")
 
     with (
-        tempfile.NamedTemporaryFile(mode="w", suffix=".base", delete=False) as f_old,
-        tempfile.NamedTemporaryFile(mode="w", suffix=".other", delete=False) as f_new,
+        tempfile.NamedTemporaryFile(mode="w", suffix=".base", delete=False, encoding="utf-8") as f_old,
+        tempfile.NamedTemporaryFile(mode="w", suffix=".other", delete=False, encoding="utf-8") as f_new,
     ):
         f_old.write(old_content)
         old_path = f_old.name
@@ -92,6 +92,8 @@ def _merge_file(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
         if result.returncode < 0:
@@ -100,7 +102,7 @@ def _merge_file(
         if result.returncode == 0:
             return FileResult(path=file_path, status="patched")
 
-        content = local_file.read_text(errors="replace")
+        content = local_file.read_text(encoding="utf-8", errors="replace")
         count = content.count("<<<<<<< ")
         return FileResult(path=file_path, status="conflict", conflict_count=count)
 

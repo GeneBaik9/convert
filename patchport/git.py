@@ -16,6 +16,7 @@ def _detect_subpath(upstream: Path) -> tuple[Path, str]:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             cwd=upstream, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
         )
     except (FileNotFoundError, NotADirectoryError):
         raise NotAGitRepoError(upstream)
@@ -47,7 +48,10 @@ def list_commits(upstream: Path, limit: int = 20) -> list[dict]:
     args = ["git", "log", f"--max-count={limit}", "--format=%H\x1f%s\x1f%ad", "--date=short"]
     if subpath:
         args += ["--", subpath]
-    result = subprocess.run(args, cwd=git_root, capture_output=True, text=True)
+    result = subprocess.run(
+        args, cwd=git_root, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    )
     if result.returncode != 0:
         raise NotAGitRepoError(upstream)
     lines = [ln for ln in result.stdout.strip().splitlines() if ln]
@@ -76,7 +80,10 @@ def get_changed_files(upstream: Path, from_hash: str, to_hash: str) -> list[str]
     args = ["git", "diff", "--name-only", f"{from_hash}..{to_hash}"]
     if subpath:
         args += ["--", subpath]
-    result = subprocess.run(args, cwd=git_root, capture_output=True, text=True)
+    result = subprocess.run(
+        args, cwd=git_root, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    )
     if result.returncode != 0:
         raise InvalidCommitRangeError(from_hash, to_hash)
     files = [f for f in result.stdout.strip().splitlines() if f]
@@ -102,6 +109,7 @@ def show_file_at_commit(upstream: Path, commit_hash: str, file_path: str) -> str
     result = subprocess.run(
         ["git", "show", f"{commit_hash}:{full}"],
         cwd=git_root, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         return None
