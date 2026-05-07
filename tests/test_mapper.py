@@ -1,4 +1,4 @@
-from patchport.mapper import MappingCandidate, is_binary, compute_score
+from patchport.mapper import MappingCandidate, is_binary, compute_score, build_candidates
 
 
 def test_mapping_candidate_defaults():
@@ -65,3 +65,50 @@ def test_compute_score_binary_uses_filename_only():
     score = compute_score("logo.png", b"\x89PNG\r\n\x00", "logo.png", b"\x89PNG\r\n\x00")
     # Filename identical → name_score=1.0 → 0.3 * 1.0 = 0.3
     assert 0.25 <= score <= 0.35
+
+
+def test_build_candidates_finds_best_match():
+    upstream_files = {"src/app.py": b"x = 1\n"}
+    target_files = {
+        "lib/app_v2.py": b"x = 1\n",        # nearly identical content
+        "lib/unrelated.py": b"z = 999\n",
+    }
+    candidates = build_candidates(upstream_files, target_files)
+    assert len(candidates) == 1
+    assert candidates[0].upstream_path == "src/app.py"
+    assert candidates[0].target_path == "lib/app_v2.py"
+    assert candidates[0].action == "merge"
+
+
+def test_build_candidates_unmapped_when_score_low():
+    upstream_files = {"src/win32_driver.py": b"import winreg\n" * 10}
+    target_files = {"lib/completely_different.py": b"import asyncio\n" * 10}
+    candidates = build_candidates(upstream_files, target_files)
+    assert candidates[0].target_path is None
+    assert candidates[0].action == "skip"
+
+
+def test_build_candidates_binary_gets_overwrite_action():
+    upstream_files = {"assets/logo.png": b"\x89PNG\r\n\x00binary"}
+    target_files = {"assets/logo.png": b"\x89PNG\r\n\x00old"}
+    candidates = build_candidates(upstream_files, target_files)
+    assert candidates[0].is_binary is True
+    assert candidates[0].action == "overwrite"
+
+
+def test_build_candidates_sorted_by_score_descending():
+    upstream_files = {
+        "src/foo.py": b"x = 1\n",
+        "src/obscure.py": b"very_different = True\n" * 5,
+    }
+    target_files = {
+        "lib/foo_v2.py": b"x = 1\n",
+        "lib/other.py": b"completely_different = 42\n" * 5,
+    }
+    candidates = build_candidates(upstream_files, target_files)
+    assert candidates[0].score >= candidates[1].score
+
+
+def test_build_candidates_empty_upstream():
+    candidates = build_candidates({}, {"lib/foo.py": b"x = 1\n"})
+    assert candidates == []
