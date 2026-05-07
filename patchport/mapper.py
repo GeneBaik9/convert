@@ -1,10 +1,15 @@
+import json
 from dataclasses import dataclass
+from datetime import date
 from difflib import SequenceMatcher
 from pathlib import Path
 
 FILENAME_WEIGHT = 0.3
 CONTENT_WEIGHT = 0.7
 MATCH_THRESHOLD = 0.65
+
+MAP_FILENAME = ".patchport-map.json"
+MAP_BACKUP_FILENAME = ".patchport-map.json.bak"
 
 
 @dataclass
@@ -82,3 +87,63 @@ def build_candidates(
         )
 
     return sorted(candidates, key=lambda c: c.score, reverse=True)
+
+
+def save_map(target_dir: Path, candidates: list[MappingCandidate]) -> None:
+    mappings: dict = {}
+    for c in candidates:
+        if c.is_binary:
+            mappings[c.upstream_path] = {
+                "target": c.target_path,
+                "binary": True,
+                "action": c.action,
+            }
+        else:
+            mappings[c.upstream_path] = c.target_path
+
+    data = {
+        "version": "2",
+        "created": date.today().isoformat(),
+        "mappings": mappings,
+    }
+    (target_dir / MAP_FILENAME).write_text(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def load_map(target_dir: Path) -> list[MappingCandidate] | None:
+    map_file = target_dir / MAP_FILENAME
+    if not map_file.exists():
+        return None
+
+    from .exceptions import MappingFileError
+    try:
+        data = json.loads(map_file.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        raise MappingFileError(str(e))
+
+    candidates = []
+    for upstream_path, entry in data.get("mappings", {}).items():
+        if isinstance(entry, dict):
+            candidates.append(MappingCandidate(
+                upstream_path=upstream_path,
+                target_path=entry.get("target"),
+                score=1.0,
+                is_binary=True,
+                action=entry.get("action", "overwrite"),
+            ))
+        else:
+            target_path = entry  # str or None
+            candidates.append(MappingCandidate(
+                upstream_path=upstream_path,
+                target_path=target_path,
+                score=1.0,
+                is_binary=False,
+                action="merge" if target_path is not None else "skip",
+            ))
+    return candidates
+
+
+def backup_map(target_dir: Path) -> None:
+    map_file = target_dir / MAP_FILENAME
+    if map_file.exists():
+        bak = target_dir / MAP_BACKUP_FILENAME
+        bak.write_bytes(map_file.read_bytes())

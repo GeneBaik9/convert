@@ -112,3 +112,62 @@ def test_build_candidates_sorted_by_score_descending():
 def test_build_candidates_empty_upstream():
     candidates = build_candidates({}, {"lib/foo.py": b"x = 1\n"})
     assert candidates == []
+
+
+from pathlib import Path
+from patchport.mapper import (
+    MappingCandidate, is_binary, compute_score, build_candidates,
+    save_map, load_map, backup_map, MAP_FILENAME, MAP_BACKUP_FILENAME,
+)
+from patchport.exceptions import MappingFileError
+
+
+def _make_candidates() -> list[MappingCandidate]:
+    return [
+        MappingCandidate("src/app.py", "lib/app_v2.py", 0.9, False, "merge"),
+        MappingCandidate("src/win32.py", None, 0.1, False, "skip"),
+        MappingCandidate("assets/logo.png", "assets/logo.png", 0.8, True, "overwrite"),
+    ]
+
+
+def test_save_and_load_map_roundtrip(tmp_path: Path):
+    original = _make_candidates()
+    save_map(tmp_path, original)
+    loaded = load_map(tmp_path)
+    assert loaded is not None
+    assert len(loaded) == 3
+
+    text_entry = next(c for c in loaded if c.upstream_path == "src/app.py")
+    assert text_entry.target_path == "lib/app_v2.py"
+    assert text_entry.action == "merge"
+    assert text_entry.is_binary is False
+
+    skip_entry = next(c for c in loaded if c.upstream_path == "src/win32.py")
+    assert skip_entry.target_path is None
+    assert skip_entry.action == "skip"
+
+    binary_entry = next(c for c in loaded if c.upstream_path == "assets/logo.png")
+    assert binary_entry.is_binary is True
+    assert binary_entry.action == "overwrite"
+
+
+def test_load_map_returns_none_when_missing(tmp_path: Path):
+    assert load_map(tmp_path) is None
+
+
+def test_load_map_raises_on_corrupt_json(tmp_path: Path):
+    (tmp_path / MAP_FILENAME).write_text("not valid json {{{")
+    import pytest
+    with pytest.raises(MappingFileError):
+        load_map(tmp_path)
+
+
+def test_backup_map_creates_bak_file(tmp_path: Path):
+    save_map(tmp_path, _make_candidates())
+    backup_map(tmp_path)
+    assert (tmp_path / MAP_BACKUP_FILENAME).exists()
+
+
+def test_backup_map_noop_when_no_map(tmp_path: Path):
+    backup_map(tmp_path)  # should not raise
+    assert not (tmp_path / MAP_BACKUP_FILENAME).exists()
