@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .exceptions import PatchApplicationError
-from .git import get_changed_files, show_file_at_commit
+from .git import get_changed_files, show_file_at_commit, show_file_bytes_at_commit
+from .mapper import MappingCandidate
 
 
 @dataclass
@@ -15,10 +16,23 @@ class FileResult:
 
 
 def apply_changes(
-    upstream: Path, target: Path, from_hash: str, to_hash: str
+    upstream: Path,
+    target: Path,
+    from_hash: str,
+    to_hash: str,
+    candidates: list[MappingCandidate],
 ) -> list[FileResult]:
+    candidate_map = {c.upstream_path: c for c in candidates}
     changed_files = get_changed_files(upstream, from_hash, to_hash)
-    return [_merge_file(upstream, target, from_hash, to_hash, f) for f in changed_files]
+
+    results = []
+    for file_path in changed_files:
+        candidate = candidate_map.get(file_path)
+        if candidate is None:
+            results.append(FileResult(path=file_path, status="skipped"))
+            continue
+        results.append(_merge_file(upstream, target, from_hash, to_hash, candidate))
+    return results
 
 
 def _merge_file(
@@ -26,14 +40,29 @@ def _merge_file(
     target: Path,
     from_hash: str,
     to_hash: str,
-    file_path: str,
+    candidate: MappingCandidate,
 ) -> FileResult:
-    old_content = show_file_at_commit(upstream, from_hash, file_path)
-    new_content = show_file_at_commit(upstream, to_hash, file_path)
-    local_file = target / file_path
+    file_path = candidate.upstream_path
 
+    if candidate.action == "skip":
+        return FileResult(path=file_path, status="skipped")
+
+    if candidate.action == "overwrite":
+        new_bytes = show_file_bytes_at_commit(upstream, to_hash, file_path)
+        if new_bytes is None:
+            return FileResult(path=file_path, status="skipped")
+        local_file = target / candidate.target_path
+        local_file.parent.mkdir(parents=True, exist_ok=True)
+        local_file.write_bytes(new_bytes)
+        return FileResult(path=file_path, status="patched")
+
+    # action == "merge"
+    new_content = show_file_at_commit(upstream, to_hash, file_path)
     if new_content is None:
         return FileResult(path=file_path, status="skipped")
+
+    local_file = target / candidate.target_path
+    old_content = show_file_at_commit(upstream, from_hash, file_path)
 
     if old_content is None or not local_file.exists():
         local_file.parent.mkdir(parents=True, exist_ok=True)
