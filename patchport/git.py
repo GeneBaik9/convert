@@ -94,3 +94,14 @@ def show_file_at_commit(upstream: Path, commit_hash: str, file_path: str) -> str
     if result.returncode != 0:
         return None
     return result.stdout
+
+
+def show_file_bytes_at_commit(upstream: Path, commit_hash: str, file_path: str) -> bytes | None:
+    result = subprocess.run(
+        ["git", "show", f"{commit_hash}:{file_path}"],
+        cwd=upstream,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout

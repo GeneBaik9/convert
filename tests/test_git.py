@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 import pytest
-from patchport.git import list_commits, get_changed_files, show_file_at_commit
+from patchport.git import list_commits, get_changed_files, show_file_at_commit, show_file_bytes_at_commit
 from patchport.exceptions import NotAGitRepoError
 
 
@@ -83,4 +83,16 @@ def test_show_file_at_newer_commit(upstream_repo: Path) -> None:
 def test_show_file_returns_none_for_missing_file(upstream_repo: Path) -> None:
     commits = list_commits(upstream_repo)
     result = show_file_at_commit(upstream_repo, commits[0]["hash"], "nonexistent.py")
+    assert result is None
+
+
+def test_show_file_bytes_at_commit(upstream_repo: Path) -> None:
+    commits = list_commits(upstream_repo)
+    result = show_file_bytes_at_commit(upstream_repo, commits[1]["hash"], "main.py")
+    assert result == b"x = 1\n"
+
+
+def test_show_file_bytes_returns_none_for_missing(upstream_repo: Path) -> None:
+    commits = list_commits(upstream_repo)
+    result = show_file_bytes_at_commit(upstream_repo, commits[0]["hash"], "nonexistent.py")
     assert result is None
