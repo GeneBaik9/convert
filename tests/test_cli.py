@@ -1,8 +1,15 @@
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 from patchport.cli import main
+from patchport.mapper import MappingCandidate
+
+
+def _auto_confirm(candidates, target_files):
+    """Mock show_mapping_ui: confirm suggested mapping as-is."""
+    return candidates
 
 
 @pytest.fixture
@@ -30,19 +37,21 @@ def two_repos(tmp_path: Path):
     return upstream, target
 
 
-def test_cli_applies_clean_patch(two_repos):
+@patch("patchport.cli.show_mapping_ui", side_effect=_auto_confirm)
+def test_cli_applies_clean_patch(_, two_repos):
     upstream, target = two_repos
     runner = CliRunner()
     result = runner.invoke(
         main,
         ["--upstream", str(upstream), "--target", str(target)],
-        input="2\n1\n",   # From #2 (older) → To #1 (newer)
+        input="2\n1\n",
     )
     assert result.exit_code == 0, result.output
     assert (target / "hello.py").read_text() == "msg = 'world'\n"
 
 
-def test_cli_dry_run_does_not_modify(two_repos):
+@patch("patchport.cli.show_mapping_ui", side_effect=_auto_confirm)
+def test_cli_dry_run_does_not_modify(_, two_repos):
     upstream, target = two_repos
     runner = CliRunner()
     result = runner.invoke(
@@ -56,7 +65,6 @@ def test_cli_dry_run_does_not_modify(two_repos):
 
 
 def test_cli_invalid_upstream_exits_with_error(tmp_path):
-    # tmp_path exists but is not a git repo — exercises our NotAGitRepoError path
     target = tmp_path / "target"
     target.mkdir()
     runner = CliRunner()
@@ -67,7 +75,8 @@ def test_cli_invalid_upstream_exits_with_error(tmp_path):
     assert result.exit_code != 0
 
 
-def test_cli_shows_commit_table(two_repos):
+@patch("patchport.cli.show_mapping_ui", side_effect=_auto_confirm)
+def test_cli_shows_commit_table(_, two_repos):
     upstream, target = two_repos
     runner = CliRunner()
     result = runner.invoke(
