@@ -9,8 +9,18 @@ FILENAME_WEIGHT = 0.3
 CONTENT_WEIGHT = 0.7
 MATCH_THRESHOLD = 0.65
 
+# Cap content size for SequenceMatcher comparison.
+# SequenceMatcher.ratio() is ~O(N²) on large content; this prevents pathological
+# slowdowns on big files (data files, generated code, etc.).
+MAX_COMPARE_BYTES = 100_000
+
 MAP_FILENAME = ".patchport-map.json"
 MAP_BACKUP_FILENAME = ".patchport-map.json.bak"
+
+
+def _ext(path: str) -> str:
+    """Return lowercase extension (e.g. '.py'), or '' if none."""
+    return Path(path).suffix.lower()
 
 
 @dataclass
@@ -41,8 +51,9 @@ def compute_score(
     if is_binary(upstream_bytes) or is_binary(target_bytes):
         return FILENAME_WEIGHT * name_score
 
-    upstream_text = upstream_bytes.decode("utf-8", errors="replace")
-    target_text = target_bytes.decode("utf-8", errors="replace")
+    # Cap content size — SequenceMatcher on huge files takes minutes
+    upstream_text = upstream_bytes[:MAX_COMPARE_BYTES].decode("utf-8", errors="replace")
+    target_text = target_bytes[:MAX_COMPARE_BYTES].decode("utf-8", errors="replace")
     content_score = SequenceMatcher(None, upstream_text, target_text).ratio()
 
     return FILENAME_WEIGHT * name_score + CONTENT_WEIGHT * content_score
@@ -53,30 +64,74 @@ def build_candidates(
     target_files: dict[str, bytes],
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> list[MappingCandidate]:
-    candidates = []
-    n_up = len(upstream_files)
-    n_tg = len(target_files)
-    total_comparisons = n_up * n_tg
-    PROGRESS_EVERY = 20
+    """Build similarity-based mapping candidates.
 
-    for i, (up_path, up_bytes) in enumerate(upstream_files.items(), start=1):
+    Optimizations:
+    - Targets are grouped by extension; only same-extension files are compared
+      (a .h file is never compared to a .md file)
+    - Upstream content is decoded once per upstream file, not per comparison
+    - quick_ratio() is used as an upper-bound filter before the expensive ratio()
+    """
+    # Group target files by extension for fast lookup
+    target_by_ext: dict[str, list[tuple[str, bytes]]] = {}
+    for tgt_path, tgt_bytes in target_files.items():
+        target_by_ext.setdefault(_ext(tgt_path), []).append((tgt_path, tgt_bytes))
+
+    # Total comparisons = sum of per-upstream candidate counts (only same-extension)
+    total_comparisons = sum(
+        len(target_by_ext.get(_ext(up_path), [])) for up_path in upstream_files
+    )
+
+    candidates: list[MappingCandidate] = []
+    comp_idx = 0
+
+    for up_path, up_bytes in upstream_files.items():
         up_is_binary = is_binary(up_bytes)
+        up_ext = _ext(up_path)
+        candidate_targets = target_by_ext.get(up_ext, [])
+        up_basename = Path(up_path).name
+
+        # Pre-decode upstream content once (not per comparison)
+        up_text_capped = (
+            "" if up_is_binary
+            else up_bytes[:MAX_COMPARE_BYTES].decode("utf-8", errors="replace")
+        )
+
         best_score = 0.0
         best_target: str | None = None
 
-        for j, (tgt_path, tgt_bytes) in enumerate(target_files.items(), start=1):
+        for tgt_path, tgt_bytes in candidate_targets:
+            comp_idx += 1
             if progress_callback is not None:
-                comp_idx = (i - 1) * n_tg + j
-                if comp_idx % PROGRESS_EVERY == 0 or comp_idx == total_comparisons:
-                    progress_callback(comp_idx, total_comparisons, f"{up_path} vs {tgt_path}")
-            score = compute_score(up_path, up_bytes, tgt_path, tgt_bytes)
+                progress_callback(comp_idx, total_comparisons, f"{up_path} vs {tgt_path}")
+
+            tg_is_binary = is_binary(tgt_bytes)
+            name_score = SequenceMatcher(
+                None, up_basename, Path(tgt_path).name
+            ).ratio()
+
+            if up_is_binary or tg_is_binary:
+                score = FILENAME_WEIGHT * name_score
+            else:
+                tg_text_capped = tgt_bytes[:MAX_COMPARE_BYTES].decode(
+                    "utf-8", errors="replace"
+                )
+                sm = SequenceMatcher(None, up_text_capped, tg_text_capped)
+                # quick_ratio is a fast upper bound on ratio
+                upper = FILENAME_WEIGHT * name_score + CONTENT_WEIGHT * sm.quick_ratio()
+                if upper <= best_score:
+                    # Cannot beat current best — skip the expensive ratio() call
+                    continue
+                content_score = sm.ratio()
+                score = FILENAME_WEIGHT * name_score + CONTENT_WEIGHT * content_score
+
             if score > best_score:
                 best_score = score
                 best_target = tgt_path
 
-        # Apply threshold check, but be lenient with binary files if filenames match exactly
+        # Threshold check (binary fallback: identical filename ok even below threshold)
         if best_score < MATCH_THRESHOLD:
-            if not (up_is_binary and best_target and Path(up_path).name == Path(best_target).name):
+            if not (up_is_binary and best_target and up_basename == Path(best_target).name):
                 best_target = None
 
         if best_target is None:

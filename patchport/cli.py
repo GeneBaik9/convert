@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -171,6 +172,7 @@ def _build_and_confirm(
     console.print(f"\n[bold]Analyzing file similarity[/bold] ({len(changed_files)} upstream file(s))\n")
 
     # Phase 1: Read upstream files
+    t0 = time.time()
     upstream_files: dict[str, bytes] = {}
     with console.status("[cyan]Reading upstream file contents...[/cyan]") as status:
         for i, f in enumerate(changed_files, start=1):
@@ -180,7 +182,7 @@ def _build_and_confirm(
                 raw = show_file_bytes_at_commit(upstream, to_hash, f)
             if raw is not None:
                 upstream_files[f] = raw
-    console.print(f"  [green]✔[/green] Read {len(upstream_files)} upstream file(s)")
+    console.print(f"  [green]✔[/green] Read {len(upstream_files)} upstream file(s) [dim]({time.time()-t0:.1f}s)[/dim]")
 
     # Phase 2: Scan target directory (with exclusions)
     target_files: dict[str, bytes] = {}
@@ -205,18 +207,42 @@ def _build_and_confirm(
         except (OSError, PermissionError):
             pass
 
+    t1 = time.time()
     with console.status("[cyan]Scanning target directory...[/cyan]") as status:
         _walk(target)
-    console.print(f"  [green]✔[/green] Scanned {len(target_files)} target file(s) (excluded: {', '.join(sorted(EXCLUDED_DIRS))})")
+    console.print(f"  [green]✔[/green] Scanned {len(target_files)} target file(s) [dim]({time.time()-t1:.1f}s)[/dim]")
 
     if not target_files:
         console.print("[yellow]⚠  No target files found after exclusions — nothing to map against.[/yellow]")
         return []
 
-    # Phase 3: Compute similarity (the slow part — show progress bar)
-    total_comparisons = len(upstream_files) * len(target_files)
-    console.print(f"\n  [dim]Computing similarity: {len(upstream_files)} × {len(target_files)} = {total_comparisons} comparisons[/dim]")
+    # Phase 3: Compute similarity — only same-extension pairs are compared
+    # Pre-compute the actual comparison count after extension filtering for accurate progress total
+    from collections import Counter
+    up_ext_counts = Counter(Path(p).suffix.lower() for p in upstream_files)
+    tg_ext_counts = Counter(Path(p).suffix.lower() for p in target_files)
+    total_comparisons = sum(
+        up_ext_counts[ext] * tg_ext_counts.get(ext, 0) for ext in up_ext_counts
+    )
+    naive_total = len(upstream_files) * len(target_files)
 
+    console.print(
+        f"\n  [dim]Computing similarity: {len(upstream_files)} upstream × "
+        f"{len(target_files)} target → {total_comparisons} same-extension comparisons "
+        f"(filtered out {naive_total - total_comparisons} cross-extension pairs)[/dim]"
+    )
+
+    if total_comparisons == 0:
+        console.print(
+            "[yellow]⚠  No upstream file shares an extension with any target file — "
+            "all entries will be unmapped.[/yellow]"
+        )
+
+    SLOW_WARN_SEC = 3.0
+    last_call_time = [time.time()]
+    last_pair = [""]
+
+    t2 = time.time()
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -226,16 +252,37 @@ def _build_and_confirm(
         console=console,
         transient=False,
     ) as progress:
-        task_id = progress.add_task("Comparing files", total=total_comparisons)
+        task_id = progress.add_task(
+            "Comparing files", total=max(total_comparisons, 1)
+        )
 
         def _on_progress(i: int, total: int, current_pair: str) -> None:
-            display = current_pair if len(current_pair) <= 60 else "..." + current_pair[-57:]
-            progress.update(task_id, completed=i, description=f"[cyan]Comparing[/cyan] [dim]{display}[/dim]")
+            now = time.time()
+            elapsed = now - last_call_time[0]
+            if elapsed > SLOW_WARN_SEC and last_pair[0]:
+                progress.console.print(
+                    f"  [yellow]⚠[/yellow] slow comparison [dim]({elapsed:.1f}s)[/dim]: {last_pair[0]}"
+                )
+            last_call_time[0] = now
+            last_pair[0] = current_pair
+            display = current_pair if len(current_pair) <= 70 else "..." + current_pair[-67:]
+            progress.update(
+                task_id, completed=i,
+                description=f"[cyan]Comparing[/cyan] [dim]{display}[/dim]",
+            )
 
-        candidates = build_candidates(upstream_files, target_files, progress_callback=_on_progress)
-        progress.update(task_id, completed=total_comparisons, description="[green]Comparison complete[/green]")
+        candidates = build_candidates(
+            upstream_files, target_files, progress_callback=_on_progress
+        )
+        progress.update(
+            task_id, completed=max(total_comparisons, 1),
+            description="[green]Comparison complete[/green]",
+        )
 
-    console.print(f"  [green]✔[/green] Computed {len(candidates)} candidate mapping(s)")
+    console.print(
+        f"  [green]✔[/green] Computed {len(candidates)} candidate mapping(s) "
+        f"[dim]({time.time()-t2:.1f}s)[/dim]"
+    )
 
     if dry_run:
         return candidates
