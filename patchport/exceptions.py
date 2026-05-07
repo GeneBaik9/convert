@@ -19,3 +19,11 @@ class PatchApplicationError(Exception):
     def __init__(self, file_path: str, detail: str) -> None:
         super().__init__(f"Failed to apply patch to '{file_path}': {detail}")
         self.file_path = file_path
+
+
+class MappingFileError(Exception):
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            f"Cannot read .patchport-map.json: {detail}. "
+            "Run with --remap to rebuild the mapping."
+        )
