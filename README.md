@@ -1,5 +1,3 @@
-![우량애](~/Pictures/wooryangae_logo/variant1_below.png)
-
 # patchport
 
 > Apply upstream Git changes to your local codebase — without sharing a repository.
