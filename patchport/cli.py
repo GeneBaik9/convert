@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import click
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, MofNCompleteColumn
 
 from .exceptions import MappingFileError, NotAGitRepoError, PatchApplicationError
 from .git import get_changed_files, list_commits, show_file_bytes_at_commit
@@ -15,6 +16,13 @@ from .mapper import (
 from .mapper_ui import show_mapping_ui
 from .patcher import apply_changes
 from .reporter import console, print_commit_table, print_results
+
+EXCLUDED_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv",
+    "dist", "build", ".pytest_cache", ".mypy_cache", ".tox",
+    "target", ".idea", ".vscode",
+}
+EXCLUDED_FILES = {".patchport-map.json", ".patchport-map.json.bak", ".DS_Store"}
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -160,31 +168,77 @@ def _build_and_confirm(
     changed_files: list[str],
     dry_run: bool,
 ) -> list[MappingCandidate]:
-    console.print(f"\nAnalyzing file similarity ({len(changed_files)} file(s))...\n")
+    console.print(f"\n[bold]Analyzing file similarity[/bold] ({len(changed_files)} upstream file(s))\n")
 
+    # Phase 1: Read upstream files
     upstream_files: dict[str, bytes] = {}
-    for f in changed_files:
-        raw = show_file_bytes_at_commit(upstream, from_hash, f)
-        if raw is None:
-            raw = show_file_bytes_at_commit(upstream, to_hash, f)
-        if raw is not None:
-            upstream_files[f] = raw
+    with console.status("[cyan]Reading upstream file contents...[/cyan]") as status:
+        for i, f in enumerate(changed_files, start=1):
+            status.update(f"[cyan]Reading upstream files ({i}/{len(changed_files)})[/cyan] [dim]{f}[/dim]")
+            raw = show_file_bytes_at_commit(upstream, from_hash, f)
+            if raw is None:
+                raw = show_file_bytes_at_commit(upstream, to_hash, f)
+            if raw is not None:
+                upstream_files[f] = raw
+    console.print(f"  [green]✔[/green] Read {len(upstream_files)} upstream file(s)")
 
+    # Phase 2: Scan target directory (with exclusions)
     target_files: dict[str, bytes] = {}
     target_file_list: list[str] = []
-    for p in target.rglob("*"):
-        if p.is_file() and p.name not in (".patchport-map.json", ".patchport-map.json.bak"):
-            rel = str(p.relative_to(target))
-            target_file_list.append(rel)
-            try:
-                target_files[rel] = p.read_bytes()
-            except OSError:
-                pass
 
-    candidates = build_candidates(upstream_files, target_files)
+    def _walk(path: Path):
+        try:
+            for entry in path.iterdir():
+                if entry.is_dir():
+                    if entry.name in EXCLUDED_DIRS or entry.name.startswith("."):
+                        continue
+                    _walk(entry)
+                elif entry.is_file():
+                    if entry.name in EXCLUDED_FILES:
+                        continue
+                    try:
+                        rel = str(entry.relative_to(target))
+                        target_file_list.append(rel)
+                        target_files[rel] = entry.read_bytes()
+                    except OSError:
+                        pass
+        except (OSError, PermissionError):
+            pass
+
+    with console.status("[cyan]Scanning target directory...[/cyan]") as status:
+        _walk(target)
+    console.print(f"  [green]✔[/green] Scanned {len(target_files)} target file(s) (excluded: {', '.join(sorted(EXCLUDED_DIRS))})")
+
+    if not target_files:
+        console.print("[yellow]⚠  No target files found after exclusions — nothing to map against.[/yellow]")
+        return []
+
+    # Phase 3: Compute similarity (the slow part — show progress bar)
+    total_comparisons = len(upstream_files) * len(target_files)
+    console.print(f"\n  [dim]Computing similarity: {len(upstream_files)} × {len(target_files)} = {total_comparisons} comparisons[/dim]")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TaskProgressColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task_id = progress.add_task("Comparing files", total=len(upstream_files))
+
+        def _on_progress(i: int, total: int, current_path: str) -> None:
+            display = current_path if len(current_path) <= 50 else "..." + current_path[-47:]
+            progress.update(task_id, completed=i - 1, description=f"[cyan]Comparing[/cyan] [dim]{display}[/dim]")
+
+        candidates = build_candidates(upstream_files, target_files, progress_callback=_on_progress)
+        progress.update(task_id, completed=len(upstream_files), description="[green]Comparison complete[/green]")
+
+    console.print(f"  [green]✔[/green] Computed {len(candidates)} candidate mapping(s)")
 
     if dry_run:
         return candidates
 
-    console.print("Opening browser for file mapping confirmation...\n")
+    console.print("\n[cyan]Opening browser for file mapping confirmation...[/cyan]\n")
     return show_mapping_ui(candidates, target_file_list)

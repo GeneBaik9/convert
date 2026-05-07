@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Callable, Optional
 
 FILENAME_WEIGHT = 0.3
 CONTENT_WEIGHT = 0.7
@@ -50,10 +51,13 @@ def compute_score(
 def build_candidates(
     upstream_files: dict[str, bytes],
     target_files: dict[str, bytes],
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> list[MappingCandidate]:
     candidates = []
 
-    for up_path, up_bytes in upstream_files.items():
+    for i, (up_path, up_bytes) in enumerate(upstream_files.items(), start=1):
+        if progress_callback is not None:
+            progress_callback(i, len(upstream_files), up_path)
         up_is_binary = is_binary(up_bytes)
         best_score = 0.0
         best_target: str | None = None
