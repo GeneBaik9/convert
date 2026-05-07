@@ -54,15 +54,21 @@ def build_candidates(
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> list[MappingCandidate]:
     candidates = []
+    n_up = len(upstream_files)
+    n_tg = len(target_files)
+    total_comparisons = n_up * n_tg
+    PROGRESS_EVERY = 20
 
     for i, (up_path, up_bytes) in enumerate(upstream_files.items(), start=1):
-        if progress_callback is not None:
-            progress_callback(i, len(upstream_files), up_path)
         up_is_binary = is_binary(up_bytes)
         best_score = 0.0
         best_target: str | None = None
 
-        for tgt_path, tgt_bytes in target_files.items():
+        for j, (tgt_path, tgt_bytes) in enumerate(target_files.items(), start=1):
+            if progress_callback is not None:
+                comp_idx = (i - 1) * n_tg + j
+                if comp_idx % PROGRESS_EVERY == 0 or comp_idx == total_comparisons:
+                    progress_callback(comp_idx, total_comparisons, f"{up_path} vs {tgt_path}")
             score = compute_score(up_path, up_bytes, tgt_path, tgt_bytes)
             if score > best_score:
                 best_score = score

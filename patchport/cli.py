@@ -226,14 +226,14 @@ def _build_and_confirm(
         console=console,
         transient=False,
     ) as progress:
-        task_id = progress.add_task("Comparing files", total=len(upstream_files))
+        task_id = progress.add_task("Comparing files", total=total_comparisons)
 
-        def _on_progress(i: int, total: int, current_path: str) -> None:
-            display = current_path if len(current_path) <= 50 else "..." + current_path[-47:]
-            progress.update(task_id, completed=i - 1, description=f"[cyan]Comparing[/cyan] [dim]{display}[/dim]")
+        def _on_progress(i: int, total: int, current_pair: str) -> None:
+            display = current_pair if len(current_pair) <= 60 else "..." + current_pair[-57:]
+            progress.update(task_id, completed=i, description=f"[cyan]Comparing[/cyan] [dim]{display}[/dim]")
 
         candidates = build_candidates(upstream_files, target_files, progress_callback=_on_progress)
-        progress.update(task_id, completed=len(upstream_files), description="[green]Comparison complete[/green]")
+        progress.update(task_id, completed=total_comparisons, description="[green]Comparison complete[/green]")
 
     console.print(f"  [green]✔[/green] Computed {len(candidates)} candidate mapping(s)")
 
